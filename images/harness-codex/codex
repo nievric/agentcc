@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+# code-server bundles Node at this stable path but does not expose it on PATH.
+# Running Codex through it avoids a second Node runtime in every harness image.
+exec /usr/lib/code-server/lib/node /opt/agentcc/codex/bin/codex.js "$@"

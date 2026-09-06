@@ -1,0 +1,6 @@
+docker==7.1.0
+cryptography==44.0.2
+fastapi==0.115.12
+httpx==0.28.1
+uvicorn[standard]==0.34.0
+websockets==15.0.1

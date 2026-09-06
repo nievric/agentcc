@@ -1,0 +1,26 @@
+# Repository-root contexts are used by the harness image builds. Keep local
+# credentials, runtime data, and development output out of every build context.
+.git
+.codex
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.crt
+**/*.cer
+**/.npmrc
+**/.pypirc
+**/.netrc
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/node_modules
+**/dist
+**/*.db
+**/*.sqlite*
+data
+session-logs
+mock

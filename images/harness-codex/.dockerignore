@@ -1,0 +1,17 @@
+.git
+.DS_Store
+README.md
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+.npmrc
+.pypirc
+.netrc
+*.db
+*.sqlite*

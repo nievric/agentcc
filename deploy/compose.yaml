@@ -1,0 +1,20 @@
+services:
+  api:
+    build:
+      context: ../backend
+    ports:
+      - "9000:9000"
+    volumes:
+      - agentcc-data:/data
+    restart: unless-stopped
+  web:
+    build:
+      context: ../frontend
+    depends_on:
+      - api
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  agentcc-data:

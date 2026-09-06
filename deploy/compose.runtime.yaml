@@ -1,0 +1,16 @@
+# Explicit opt-in for local container provisioning. Docker socket access is
+# effectively host-root access; do not use this override on an untrusted host.
+services:
+  api:
+    environment:
+      AGENTCC_RUNTIME_ENABLED: "true"
+      AGENTCC_SESSION_IMAGE: agentcc-session-codex:dev
+      AGENTCC_CODEX_SESSION_IMAGE: agentcc-session-codex:dev
+      AGENTCC_HERMES_SESSION_IMAGE: agentcc-session-hermes:dev
+      AGENTCC_CLAUDE_CODE_SESSION_IMAGE: agentcc-session-claude-code:dev
+      AGENTCC_KILOCODE_SESSION_IMAGE: agentcc-session-kilocode:dev
+      AGENTCC_WORKSPACE_HOST_ROOTS: /mnt/d/data/agentcc
+      AGENTCC_SESSION_LOG_DIR: /session-logs
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /mnt/d/data/agentcc/session-logs:/session-logs

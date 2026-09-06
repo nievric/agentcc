@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+npm-debug.log*
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+.npmrc
+.netrc

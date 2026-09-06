@@ -1,0 +1,34 @@
+# Public-image deployment for a trusted local host or private LAN.
+#
+# This compose file lets AgentCC create isolated session containers, which
+# requires Docker socket access. Do not deploy it on an untrusted host.
+name: agentcc-public
+
+services:
+  api:
+    image: ${AGENTCC_API_IMAGE:-nievric/agentcc-api:0.1.0}
+    ports:
+      - "${AGENTCC_API_PORT:-9000}:9000"
+    environment:
+      AGENTCC_RUNTIME_ENABLED: "true"
+      AGENTCC_SESSION_IMAGE: ${AGENTCC_CODEX_SESSION_IMAGE:-nievric/agentcc-session-codex:0.1.0}
+      AGENTCC_CODEX_SESSION_IMAGE: ${AGENTCC_CODEX_SESSION_IMAGE:-nievric/agentcc-session-codex:0.1.0}
+      AGENTCC_HERMES_SESSION_IMAGE: ${AGENTCC_HERMES_SESSION_IMAGE:-nievric/agentcc-session-hermes:0.1.0}
+      AGENTCC_CLAUDE_CODE_SESSION_IMAGE: ${AGENTCC_CLAUDE_CODE_SESSION_IMAGE:-nievric/agentcc-session-claude-code:0.1.0}
+      AGENTCC_KILOCODE_SESSION_IMAGE: ${AGENTCC_KILOCODE_SESSION_IMAGE:-nievric/agentcc-session-kilo-code:0.1.0}
+      AGENTCC_WORKSPACE_HOST_ROOTS: ${AGENTCC_WORKSPACE_HOST_ROOTS:-}
+    volumes:
+      - agentcc-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  web:
+    image: ${AGENTCC_WEB_IMAGE:-nievric/agentcc-web:0.1.0}
+    depends_on:
+      - api
+    ports:
+      - "${AGENTCC_WEB_PORT:-8080}:8080"
+    restart: unless-stopped
+
+volumes:
+  agentcc-data:

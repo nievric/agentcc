@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+# code-server bundles Node but deliberately does not expose it on PATH. This
+# wrapper avoids carrying a second Node/npm runtime in every Kilo session.
+exec /usr/lib/code-server/lib/node /opt/agentcc/kilocode/bin/kilo "$@"
