@@ -63,13 +63,23 @@ for trusted hosts only.
 
 ## Run locally
 
-Development needs Python 3.13+ and Node 22+.
+Development needs Python 3.13+ and Node 22+. Run these commands from the
+repository root:
 
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt
-.venv/bin/uvicorn app.main:app --app-dir backend --reload
+export AGENTCC_DATA_DIR="$PWD/.data"
+.venv/bin/uvicorn app.main:app --app-dir backend --reload --port 9000
 ```
+
+The backend automatically creates `AGENTCC_DATA_DIR` and stores its SQLite
+database, credential vault key, and session logs there. It needs read/write
+access to this directory and permission to create it in its parent directory
+if it does not exist. The repository-local `.data/` directory is ignored by
+Git. Without this setting, the backend uses the absolute path `/data`, which
+is mounted as a persistent volume in Docker Compose and may not be writable
+when running directly on your host. No manual directory creation is needed.
 
 In a second terminal:
 
