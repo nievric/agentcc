@@ -70,7 +70,6 @@ repository root:
 python3 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt
 export AGENTCC_DATA_DIR="$PWD/.data"
-.venv/bin/uvicorn app.main:app --app-dir backend --reload --port 9000
 ```
 
 The backend automatically creates `AGENTCC_DATA_DIR` and stores its SQLite
@@ -80,6 +79,31 @@ if it does not exist. The repository-local `.data/` directory is ignored by
 Git. Without this setting, the backend uses the absolute path `/data`, which
 is mounted as a persistent volume in Docker Compose and may not be writable
 when running directly on your host. No manual directory creation is needed.
+
+The local backend starts with container provisioning disabled, so workspace
+and model management work without granting the API access to Docker. To launch
+sessions in local development, make sure the backend user can access Docker,
+build the base image and at least the harness image you plan to use, and opt in
+before starting Uvicorn. For example, to enable Codex sessions, run from the
+repository root:
+
+```sh
+docker build --tag agentcc-session-base:dev images/base
+docker build \
+  --build-arg BASE_IMAGE=agentcc-session-base:dev \
+  --tag agentcc-session-codex:dev images/harness-codex
+export AGENTCC_RUNTIME_ENABLED=true
+```
+
+Other harness image build instructions are under [`images/`](images/README.md).
+Docker access is effectively host-root authority; only enable the runtime on a
+trusted local development host.
+
+Start the backend from the same terminal so it inherits the settings:
+
+```sh
+.venv/bin/uvicorn app.main:app --app-dir backend --reload --port 9000
+```
 
 In a second terminal:
 
