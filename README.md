@@ -10,7 +10,7 @@ VS Code workspace, persistent terminal, durable files, and operational view.
 
 ## Why use AgentCC?
 
-- **Contain agent work.** Each session runs in its own constrained container,
+- **Containerize agent work.** Each session runs in its own constrained container,
   preventing one agent's tools, processes, dependencies, or filesystem state
   from interfering with another session.
 - **Keep useful work after the agent stops.** Shared workspaces are durable and
@@ -36,6 +36,9 @@ VS Code workspace, persistent terminal, durable files, and operational view.
 - Durable shared workspaces backed by Docker volumes or approved host paths.
   Workspace cards show file count and storage use when the Workspaces page is
   opened; users can refresh the snapshot manually.
+- Managed Git worktrees: launch parallel agents on separate branches, continue
+  retained tasks, archive them, and export reviewed commits as local branches.
+  Task files survive session deletion; cleanup refuses uncommitted or ignored files.
 - Soft deletion and recovery for workspaces. A hard delete removes the durable
   content only after running sessions have stopped and retained session records
   have been removed.
@@ -181,6 +184,78 @@ project libraries in a workspace-local virtual environment (`python -m venv
 which is preserved with the workspace volume. Session users deliberately do
 not receive `sudo`: repeatable OS-level tools belong in a derived, pinned
 session image rather than an unrestricted root shell.
+
+## Separate branches for parallel agents
+
+For a workspace containing a committed Git repository, **Launch agent** defaults
+to **Separate branch (recommended)**. AgentCC generates a branch name, creates a
+durable checkout, and opens the session's terminal and VS Code in that checkout.
+You do not need to run `git worktree` commands. **Use original workspace** keeps
+the existing shared-files behavior. API clients that omit `checkout` also keep
+that behavior.
+
+The launch dialog shows the starting branch and commit. Local edits require an
+explicit **Use committed version** acknowledgement; they are retained in the
+original workspace and excluded from the task. Dependencies, ignored files,
+secrets, hooks, remotes, and credentials are not copied. You can opt into reusing
+the original repository's locally configured commit author name and email for
+this workspace's task repository. Otherwise configure Git identity in VS Code
+before committing. The agent CLI still starts on the first terminal attachment.
+
+In **Workspaces → Branch tasks**:
+
+- **Continue task** reuses its files and branch in a new session. Stop the
+  previous session first; suspended and uncertain launches retain the reservation.
+- **Archive / Restore task** retains all files. Deleting a completed session
+  also leaves the task's checkout intact.
+- **Export branch** makes the reviewed commit available as a local branch in
+  the original repository. It leaves the original checkout unchanged and does
+  not merge, push, or export uncommitted files. It refuses unexpected destination
+  branch changes and non-fast-forward updates. Review and merge using VS Code.
+- **Remove checkout** requires deleting its sessions and cleaning all modified,
+  untracked, and ignored files. Its committed branch history remains exportable.
+  Permanently deleting the parent workspace requires removing task checkouts and
+  explicitly confirming deletion of the retained task history.
+- Failed launches retain their files and reservation. Use **Retry launch** to
+  recover, or **Cancel pending launch** to remove an uncertain session container
+  and release its reservation. Missing or altered checkouts require manual repair;
+  AgentCC does not force-reset them.
+
+Build `agentcc-git-helper:dev` and **rebuild the session base and each enabled
+harness image** when upgrading from the earlier shared-workspace implementation.
+`AGENTCC_GIT_HELPER_IMAGE` selects the locally built helper. Worktree support is
+in this source tree; the published `0.1.0` images predate it.
+
+Each workspace's task history lives in a separate managed bare repository volume;
+each checkout has its own durable volume or approved sibling host directory.
+Back up the API database, original workspace, managed repository, and task
+checkouts together. Host directories expose task files, but Git's metadata links
+use canonical container paths: use AgentCC's VS Code for Git operations.
+Task containers mount only their own checkout and the managed repository.
+Shared Git metadata does not isolate mutually untrusted agents.
+
+The first release supports ordinary repositories at the workspace root with an
+initial commit and a `.git` directory. Linked source worktrees, submodules,
+shallow/partial repositories, sparse checkouts, alternates, and checkout filters
+are rejected with an explanation. Guided application and conflict resolution
+remain a later phase. See [the design](proposals/git-worktrees.md).
+
+## Tests
+
+```sh
+PYTHONPATH=backend .venv/bin/python -m unittest discover -s backend/tests -v
+cd frontend
+npm ci
+npm run build
+npx playwright install --with-deps chromium
+npm run test:e2e
+```
+
+The default backend suite includes unit, real-Git, SQLite migration, and API
+tests. Browser tests use the real API and Git with a fake session runtime, and
+never call a model provider. An opt-in Docker suite verifies real mounts, Unix
+permissions, tmux paths, continuation, export, and cleanup with both Docker
+volumes and host-backed storage. See [test setup and coverage](backend/tests/README.md).
 
 ## Model registry and credential vault
 

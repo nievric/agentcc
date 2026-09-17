@@ -8,13 +8,19 @@ extensions_dir="${CODE_SERVER_EXTENSIONS_DIR:-/opt/code-server/extensions}"
 mkdir -p "${workspace_root}" "${data_dir}" "${extensions_dir}"
 
 if [ "$(id -u)" = "0" ]; then
+  if [ -n "${AGENTCC_CHECKOUT:-}" ]; then
+    # Only the controller supplies this fixed, UUID-derived checkout path.
+    # Both session users share its group; trust exactly this Git directory.
+    case "$AGENTCC_CHECKOUT" in /workspaces/tasks/*/checkout) ;; *) exit 1 ;; esac
+    runuser -u coder -- git config --global --add safe.directory "$AGENTCC_CHECKOUT"
+  fi
   # Newly attached named volumes are root-owned. Set only direct AgentCC mount
   # roots; the control plane owns any broader migration or repair operation.
   # Change the mode before ownership: the runtime intentionally grants this
   # bootstrap process CAP_CHOWN only, not broader file-ownership capabilities.
-  if [ -d "${workspace_root}/session" ] && [ -w "${workspace_root}/session" ]; then
-    chmod 2775 "${workspace_root}/session"
-    chown coder:workspace "${workspace_root}/session"
+  if [ -d /workspaces/session ] && [ -w /workspaces/session ]; then
+    chmod 2775 /workspaces/session
+    chown coder:workspace /workspaces/session
   fi
   for shared_mount in "${workspace_root}"/shared/*; do
     if [ -d "${shared_mount}" ] && [ -w "${shared_mount}" ]; then

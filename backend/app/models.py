@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -78,8 +80,29 @@ class Session(BaseModel):
     container_id: str | None = None
     volume_name: str | None = None
     harness_started: bool = False
+    worktree_id: UUID | None = None
     started_at: datetime = Field(default_factory=utc_now)
     ended_at: datetime | None = None
+
+
+class CheckoutRequest(BaseModel):
+    mode: Literal["shared", "new_worktree", "existing_worktree"] = "shared"
+    worktree_id: UUID | None = None
+    source_branch: str | None = Field(default=None, min_length=1, max_length=200)
+    expected_base_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    branch: str | None = Field(default=None, min_length=1, max_length=200)
+    use_committed_version: bool = False
+    reuse_git_identity: bool = False
+
+    @model_validator(mode="after")
+    def validate_mode(self):
+        if self.mode == "existing_worktree" and self.worktree_id is None:
+            raise ValueError("select an existing branch task")
+        if self.mode != "existing_worktree" and self.worktree_id is not None:
+            raise ValueError("worktree_id is only valid for an existing task")
+        if self.mode == "new_worktree" and self.expected_base_commit is None:
+            raise ValueError("preview the starting commit before launching")
+        return self
 
 
 class SessionCreate(BaseModel):
@@ -89,6 +112,7 @@ class SessionCreate(BaseModel):
     harness: str = "Codex"
     model: str = "Default OpenAI model"
     model_id: UUID | None = None
+    checkout: CheckoutRequest = Field(default_factory=CheckoutRequest)
 
 
 class SessionAction(BaseModel):
@@ -148,6 +172,59 @@ class WorkspaceDelete(BaseModel):
     """Deletion is explicit because durable workspace assets may be valuable."""
 
     mode: str = Field(pattern="^(soft|hard)$")
+    discard_task_history: bool = False
+
+
+class RepositoryInfo(BaseModel):
+    available: bool = False
+    reason: str | None = None
+    head: str | None = None
+    branch: str | None = None
+    branches: dict[str, str] = Field(default_factory=dict)
+    dirty: bool = False
+    author_name: str | None = None
+    author_email: str | None = None
+
+
+class WorktreeCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    source_branch: str | None = Field(default=None, min_length=1, max_length=200)
+    expected_base_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    branch: str | None = Field(default=None, min_length=1, max_length=200)
+    use_committed_version: bool = False
+    reuse_git_identity: bool = False
+
+
+class Worktree(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    workspace_id: UUID
+    name: str
+    branch: str
+    source_branch: str | None = None
+    base_commit: str
+    state: Literal["creating", "ready", "archived", "removing", "removed", "needs_attention"] = "creating"
+    host_path: str | None = None
+    tip: str | None = None
+    exported_commit: str | None = None
+    dirty: bool | None = None
+    error: str | None = None
+    reserved_session_id: UUID | None = None
+    operation_id: UUID | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class WorktreeExport(BaseModel):
+    expected_tip: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
+class Operation(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    workspace_id: UUID
+    worktree_id: UUID
+    state: Literal["pending", "running", "completed", "failed", "cancelled"] = "pending"
+    session_id: UUID | None = None
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class WorkspaceStorageSettings(BaseModel):
