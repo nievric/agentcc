@@ -163,7 +163,13 @@ def create_session(payload: SessionCreate) -> Session:
     if workspace is None:
         raise HTTPException(status_code=404, detail="workspace not found")
     if not runtime.enabled:
-        raise HTTPException(status_code=503, detail="container runtime is disabled; start with deploy/compose.runtime.yaml")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "container runtime is disabled; set AGENTCC_RUNTIME_ENABLED=true "
+                "before starting the local backend or use deploy/compose.runtime.yaml"
+            ),
+        )
     selected_model: RegisteredModel | None = None
     if payload.model_id is not None:
         selected_model = store.get_model(payload.model_id)
