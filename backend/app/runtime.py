@@ -13,6 +13,7 @@ from uuid import UUID
 
 from .harnesses import HarnessConfigurationError, JournalTelemetryProbe, KiloSqliteTelemetryProbe, SqliteTelemetryProbe, harnesses
 from .models import AgentActivity, RegisteredModel, Session, SessionState, Workspace
+from .checkout import checkout_path, repository_root, repository_volume, worktree_root, worktree_volume
 
 
 logger = logging.getLogger(__name__)
@@ -285,7 +286,8 @@ class DockerContainerRuntime:
         client = self._client()
         network = self._network(client)
         self._connect_control_plane(network)
-        self.create_workspace_volume(workspace)
+        if not session.worktree_id:
+            self.create_workspace_volume(workspace)
         short_id = str(session.id).split("-", maxsplit=1)[0]
         volume_name = f"agentcc-session-{short_id}"
         container_name = f"agentcc-session-{short_id}"
@@ -295,8 +297,31 @@ class DockerContainerRuntime:
             "agentcc.session_id": str(session.id),
             "agentcc.workspace": session.workspace,
         }
+        if session.worktree_id:
+            # Adopt an exact pending launch after the API lost its response.
+            from docker.errors import NotFound
+            try:
+                existing = client.containers.get(container_name)
+            except NotFound:
+                existing = None
+            if existing is not None:
+                if any((existing.labels or {}).get(key) != value for key, value in labels.items()):
+                    raise RuntimeUnavailable("A different container owns this pending session name.")
+                expected_mounts = {volume_name: "/workspaces/session", repository_volume(workspace.id): repository_root(workspace.id),
+                                   worktree_volume(session.worktree_id): worktree_root(session.worktree_id)}
+                actual_mounts = {item.get("Name"): item["Destination"] for item in existing.attrs.get("Mounts", []) if item["Type"] == "volume"}
+                if actual_mounts != expected_mounts or existing.attrs["Config"].get("WorkingDir") != checkout_path(session):
+                    raise RuntimeUnavailable("Pending session mounts do not match the recorded task.")
+                if existing.status == "created":
+                    existing.start()
+                elif existing.status not in {"running", "paused"}:
+                    raise RuntimeUnavailable("Pending session exited. Cancel its launch before trying again.")
+                return ProvisionedContainer(existing.id, volume_name)
         try:
-            client.volumes.create(name=volume_name, labels={**labels, "agentcc.kind": "session-volume"})
+            volume_labels = {**labels, "agentcc.kind": "session-volume"}
+            volume = client.volumes.create(name=volume_name, labels=volume_labels)
+            if session.worktree_id and any((volume.attrs.get("Labels") or {}).get(key) != value for key, value in volume_labels.items()):
+                raise RuntimeUnavailable("A different task owns this private session volume.")
             try:
                 container = self._run_session_container(client, session, workspace, model, volume_name, container_name)
             except Exception as error:
@@ -318,6 +343,12 @@ class DockerContainerRuntime:
         """Run a session container from the harness's current reviewed image."""
         harness = harnesses.for_name(session.harness)
         shared_mount = f"/workspaces/shared/{workspace.folder_name}"
+        volumes = {volume_name: {"bind": "/workspaces/session", "mode": "rw"}}
+        if session.worktree_id:
+            volumes[repository_volume(workspace.id)] = {"bind": repository_root(workspace.id), "mode": "rw"}
+            volumes[worktree_volume(session.worktree_id)] = {"bind": worktree_root(session.worktree_id), "mode": "rw"}
+        else:
+            volumes[workspace.volume_name] = {"bind": shared_mount, "mode": "rw"}
         labels = {
             "agentcc.managed": "true",
             "agentcc.kind": "session",
@@ -330,12 +361,9 @@ class DockerContainerRuntime:
             detach=True,
             network=self.network_name,
             labels=labels,
-            volumes={
-                volume_name: {"bind": "/workspaces/session", "mode": "rw"},
-                workspace.volume_name: {"bind": shared_mount, "mode": "rw"},
-            },
-            environment={"WORKSPACE_ROOT": "/workspaces", "CODE_SERVER_PORT": "8080"},
-            working_dir=shared_mount,
+            volumes=volumes,
+            environment={"WORKSPACE_ROOT": checkout_path(session) if session.worktree_id else "/workspaces", "CODE_SERVER_PORT": "8080", "AGENTCC_CHECKOUT": checkout_path(session) if session.worktree_id else ""},
+            working_dir=checkout_path(session),
             mem_limit=self.memory_limit,
             nano_cpus=self.nano_cpus,
             pids_limit=self.pids_limit,
@@ -435,6 +463,18 @@ class DockerContainerRuntime:
             except ImportError:
                 pass
             raise RuntimeUnavailable("unable to stop the session container") from error
+
+    def cancel_pending_session(self, session: Session) -> None:
+        from docker.errors import NotFound
+        client = self._client()
+        short_id = str(session.id).split("-", maxsplit=1)[0]
+        try:
+            container = client.containers.get(f"agentcc-session-{short_id}")
+        except NotFound:
+            container = None
+        session.container_id = container.id if container else None
+        session.volume_name = f"agentcc-session-{short_id}"
+        self.delete_session(session)
 
     def delete_session(self, session: Session) -> None:
         """Remove only the verified disposable runtime resources for a session."""
@@ -783,7 +823,7 @@ class DockerContainerRuntime:
             {"HOME": "/home/agent", "TERM": "xterm-256color"},
         ) == 0
 
-    def _ensure_tmux_session(self, client, container_id: str, launch) -> bool:
+    def _ensure_tmux_session(self, client, container_id: str, launch, cwd: str) -> bool:
         """Return whether this call created a replacement harness tmux."""
         if self._tmux_session_exists(client, container_id):
             return False
@@ -797,7 +837,7 @@ class DockerContainerRuntime:
         exit_code = self._exec_exit_code(
             client,
             container_id,
-            self._agent_command("tmux", "new-session", "-d", "-s", "agentcc", launch.entrypoint),
+            self._agent_command("tmux", "new-session", "-d", "-s", "agentcc", "-c", cwd, launch.entrypoint),
             launch.environment,
         )
         # A concurrent browser attachment may have created the one allowed
@@ -882,7 +922,7 @@ class DockerContainerRuntime:
             if container.status != "running":
                 raise RuntimeUnavailable("session container is not running")
             launch = harnesses.for_name(session.harness).prepare(session, model, api_key)
-            created_harness = self._ensure_tmux_session(client, container.id, launch)
+            created_harness = self._ensure_tmux_session(client, container.id, launch, checkout_path(session))
             self._configure_tmux_terminal(client, container.id)
             exec_id = client.api.exec_create(
                 container.id,
@@ -890,7 +930,7 @@ class DockerContainerRuntime:
                 stdin=True,
                 tty=True,
                 environment={"HOME": "/home/agent", "TERM": "xterm-256color"},
-                workdir=f"/workspaces/shared/{session.workspace_folder_name}",
+                workdir=checkout_path(session),
             )["Id"]
             stream = client.api.exec_start(exec_id, socket=True, tty=True)
             return TerminalPty(stream=stream, client=client, exec_id=exec_id, created_harness=created_harness)

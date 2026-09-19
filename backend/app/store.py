@@ -5,12 +5,14 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
 from .models import AppEvent, ConversationMessage, ModelRegistration, RegisteredModel, Session, SessionAction, SessionLog, SessionLogTail, SessionState, Summary, Telemetry, Workspace, WorkspaceCreate
 from .vault import VaultError, vault
+from .worktree_store import WorktreeStoreMixin
 
 
 def _now() -> datetime:
@@ -41,7 +43,7 @@ def _parse_timestamp(value: str) -> datetime:
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
 
 
-class AgentCCStore:
+class AgentCCStore(WorktreeStoreMixin):
     """Durable local metadata. Workspace file assets reside in Docker volumes."""
 
     def __init__(self) -> None:
@@ -52,12 +54,17 @@ class AgentCCStore:
         self.session_log_dir.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connection(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connection(self):
         connection = sqlite3.connect(self.database_path, timeout=5)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         with self._connection() as connection:
@@ -182,11 +189,13 @@ class AgentCCStore:
                 "model_calls": "INTEGER NOT NULL DEFAULT 0",
                 "ended_at": "TEXT",
                 "harness_started": "INTEGER NOT NULL DEFAULT 0",
+                "worktree_id": "TEXT",
             }
             for name, definition in migrations.items():
                 if name not in columns:
                     connection.execute(f"ALTER TABLE sessions ADD COLUMN {name} {definition}")
             connection.execute("UPDATE sessions SET workspace_folder_name = workspace_id WHERE workspace_folder_name IS NULL")
+            self._initialize_worktrees(connection)
 
             model_columns = {row["name"] for row in connection.execute("PRAGMA table_info(registered_models)")}
             if "reasoning_effort" not in model_columns:
@@ -268,6 +277,7 @@ class AgentCCStore:
 
     def soft_delete_workspace(self, workspace_id: UUID) -> Workspace | None:
         """Hide a workspace while preserving its data and completed session history."""
+        self.guard_worktree_assets(workspace_id)
         now = _timestamp(_now())
         with self._connection() as connection:
             active = connection.execute(
@@ -310,6 +320,8 @@ class AgentCCStore:
             workspace = connection.execute("SELECT name FROM workspaces WHERE id = ?", (str(workspace_id),)).fetchone()
             if workspace is None:
                 return False
+            connection.execute("DELETE FROM worktree_operations WHERE workspace_id = ?", (str(workspace_id),))
+            connection.execute("DELETE FROM worktrees WHERE workspace_id = ?", (str(workspace_id),))
             self._emit(connection, "workspace.hard_deleted", {"workspace_id": str(workspace_id), "name": workspace["name"]})
             return connection.execute("DELETE FROM workspaces WHERE id = ?", (str(workspace_id),)).rowcount == 1
 
@@ -355,6 +367,7 @@ class AgentCCStore:
                 (str(session.id), session.name, str(session.workspace_id), session.workspace, session.workspace_folder_name, session.harness, session.model, str(session.model_id) if session.model_id else None, session.state, session.task, session.tokens, session.cost_usd, session.cost_estimate_available, session.input_tokens, session.output_tokens, session.cached_input_tokens, session.reasoning_tokens, session.model_calls, session.tool_calls, session.container_id, session.volume_name, _timestamp(session.started_at), _timestamp(session.ended_at) if session.ended_at else None, now),
             )
             self._emit(connection, "session.created", {"session_id": str(session.id), "name": session.name, "workspace_id": str(session.workspace_id)})
+            connection.execute("UPDATE sessions SET worktree_id = ? WHERE id = ?", (str(session.worktree_id) if session.worktree_id else None, str(session.id)))
         return session
 
     def _session_from_row(self, row: sqlite3.Row) -> Session:
@@ -363,6 +376,7 @@ class AgentCCStore:
             harness=row["harness"], model=row["model"], model_id=UUID(row["model_id"]) if row["model_id"] else None, state=SessionState(row["state"]), task=row["task"], tokens=row["tokens"],
             cost_usd=row["cost_usd"], cost_estimate_available=bool(row["cost_estimate_available"]), input_tokens=row["input_tokens"], output_tokens=row["output_tokens"], cached_input_tokens=row["cached_input_tokens"], reasoning_tokens=row["reasoning_tokens"], model_calls=row["model_calls"], tool_calls=row["tool_calls"], container_id=row["container_id"], volume_name=row["volume_name"],
             harness_started=bool(row["harness_started"]), started_at=_parse_timestamp(row["started_at"]), ended_at=_parse_timestamp(row["ended_at"]) if row["ended_at"] else None,
+            worktree_id=UUID(row["worktree_id"]) if row["worktree_id"] else None,
         )
 
     def mark_harness_started(self, session_id: UUID) -> None:
@@ -420,6 +434,8 @@ class AgentCCStore:
             row = connection.execute("SELECT * FROM sessions WHERE id = ?", (str(session_id),)).fetchone()
             if row is None:
                 return None
+            if row["state"] == SessionState.COMPLETED and payload.action != "stop":
+                raise ValueError("Completed sessions cannot be resumed; launch a new session to continue the task.")
             state = state_by_action[payload.action]
             now = _timestamp(_now())
             connection.execute("UPDATE sessions SET state = ?, ended_at = ?, updated_at = ? WHERE id = ?", (state, now if state == SessionState.COMPLETED else None, now, str(session_id)))
@@ -449,13 +465,13 @@ class AgentCCStore:
             def tokens_since(hours: int) -> int:
                 cutoff = _timestamp(now - timedelta(hours=hours))
                 return int(connection.execute("SELECT COALESCE(SUM(tokens), 0) FROM token_usage_samples WHERE occurred_at >= ?", (cutoff,)).fetchone()[0])
-        return Summary(
-            total_sessions=len(sessions), running=sum(session.state == SessionState.RUNNING for session in sessions),
-            suspended=sum(session.state == SessionState.SUSPENDED for session in sessions), idle=sum(session.state == SessionState.IDLE for session in sessions),
-            tokens_last_hour=tokens_since(1), tokens_last_24_hours=tokens_since(24), tokens_last_7_days=tokens_since(24 * 7), estimated_cost_usd=round(sum(session.cost_usd for session in sessions if session.cost_estimate_available), 2),
-            estimated_cost_available=any(session.cost_estimate_available for session in sessions),
-            uptime_label="Persistent local runtime",
-        )
+            return Summary(
+                total_sessions=len(sessions), running=sum(session.state == SessionState.RUNNING for session in sessions),
+                suspended=sum(session.state == SessionState.SUSPENDED for session in sessions), idle=sum(session.state == SessionState.IDLE for session in sessions),
+                tokens_last_hour=tokens_since(1), tokens_last_24_hours=tokens_since(24), tokens_last_7_days=tokens_since(24 * 7), estimated_cost_usd=round(sum(session.cost_usd for session in sessions if session.cost_estimate_available), 2),
+                estimated_cost_available=any(session.cost_estimate_available for session in sessions),
+                uptime_label="Persistent local runtime",
+            )
 
     def telemetry(self) -> Telemetry:
         summary = self.summary()

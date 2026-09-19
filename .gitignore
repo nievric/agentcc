@@ -1,6 +1,12 @@
 .venv/
+/references/
 .data/
 __pycache__/
 *.py[cod]
 frontend/node_modules/
 frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+frontend/test-results/
+frontend/playwright-report/
