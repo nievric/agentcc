@@ -168,6 +168,14 @@ def list_sessions() -> list[Session]:
 def create_session(payload: SessionCreate, response: Response, idempotency_key: str | None = Header(default=None)):
     if store.get_workspace(payload.workspace_id) is None:
         raise HTTPException(status_code=404, detail="workspace not found")
+    if not runtime.enabled:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "container runtime is disabled; set AGENTCC_RUNTIME_ENABLED=true "
+                "before starting the local backend or use deploy/compose.runtime.yaml"
+            ),
+        )
     try:
         result = worktrees.launch(payload, idempotency_key)
         if isinstance(result, Operation):

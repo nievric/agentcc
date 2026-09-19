@@ -1,5 +1,6 @@
 .venv/
 /references/
+.data/
 __pycache__/
 *.py[cod]
 frontend/node_modules/
