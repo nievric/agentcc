@@ -23,6 +23,7 @@ export type Session = {
   tool_calls: number;
   container_id?: string | null;
   volume_name?: string | null;
+  worktree_id?: string | null;
   started_at: string;
   ended_at?: string | null;
 };
@@ -77,6 +78,31 @@ export type WorkspaceUsage = {
 };
 
 export type DisplaySettings = { timezone?: string | null };
+
+export type CheckoutRequest = {
+  mode: "shared" | "new_worktree" | "existing_worktree";
+  worktree_id?: string;
+  source_branch?: string;
+  expected_base_commit?: string;
+  branch?: string;
+  use_committed_version?: boolean;
+  reuse_git_identity?: boolean;
+};
+export type RepositoryInfo = {
+  available: boolean; reason?: string | null; head?: string | null;
+  branch?: string | null; branches: Record<string, string>; dirty: boolean;
+  author_name?: string | null; author_email?: string | null;
+};
+export type Worktree = {
+  id: string; workspace_id: string; name: string; branch: string; base_commit: string;
+  state: "creating" | "ready" | "archived" | "removing" | "removed" | "needs_attention";
+  tip?: string | null; dirty?: boolean | null; exported_commit?: string | null;
+  reserved_session_id?: string | null; operation_id?: string | null; error?: string | null;
+};
+export type Operation = {
+  id: string; workspace_id: string; worktree_id: string; session_id?: string | null;
+  state: "pending" | "running" | "completed" | "failed" | "cancelled"; error?: string | null;
+};
 
 export type SessionLog = {
   id: number;
@@ -169,11 +195,18 @@ export const api = {
   deleteModel: (id: string) => request<void>(`/models/${id}`, { method: "DELETE" }),
   createWorkspace: (payload: Pick<Workspace, "name" | "description">) =>
     request<Workspace>("/workspaces", { method: "POST", body: JSON.stringify(payload) }),
-  deleteWorkspace: (id: string, mode: "soft" | "hard") =>
-    request<void>(`/workspaces/${id}`, { method: "DELETE", body: JSON.stringify({ mode }) }),
+  deleteWorkspace: (id: string, mode: "soft" | "hard", discard_task_history = false) =>
+    request<void>(`/workspaces/${id}`, { method: "DELETE", body: JSON.stringify({ mode, discard_task_history }) }),
   restoreWorkspace: (id: string) => request<Workspace>(`/workspaces/${id}/restore`, { method: "POST" }),
-  createSession: (payload: Pick<Session, "name" | "workspace_id" | "task" | "harness" | "model"> & { model_id?: string | null }) =>
-    request<Session>("/sessions", { method: "POST", body: JSON.stringify(payload) }),
+  createSession: (payload: Pick<Session, "name" | "workspace_id" | "task" | "harness" | "model"> & { model_id?: string | null; checkout?: CheckoutRequest }, key?: string) =>
+    request<Session | Operation>("/sessions", { method: "POST", headers: { "Content-Type": "application/json", ...(key ? { "Idempotency-Key": key } : {}) }, body: JSON.stringify(payload) }),
+  repository: (id: string) => request<RepositoryInfo>(`/workspaces/${id}/repository`),
+  worktrees: (id: string) => request<Worktree[]>(`/workspaces/${id}/worktrees`),
+  worktree: (id: string) => request<Worktree>(`/worktrees/${id}`),
+  worktreeAction: (id: string, action: "archive" | "restore" | "remove" | "cancel-launch") => request<Worktree>(`/worktrees/${id}/${action}`, { method: "POST" }),
+  exportWorktree: (id: string, expected_tip: string) => request<Worktree>(`/worktrees/${id}/export`, { method: "POST", body: JSON.stringify({ expected_tip }) }),
+  operation: (id: string) => request<Operation>(`/operations/${id}`),
+  retryOperation: (id: string) => request<Operation>(`/operations/${id}/retry`, { method: "POST" }),
   deleteSession: (id: string) => request<void>(`/sessions/${id}`, { method: "DELETE" }),
   sessionLogs: (id: string) => request<SessionLog[]>(`/sessions/${id}/logs`),
   sessionLogTail: (id: string) => request<SessionLogTail>(`/sessions/${id}/logs/tail`),
@@ -182,3 +215,14 @@ export const api = {
   actOnSession: (id: string, action: "suspend" | "resume" | "stop") =>
     request<Session>(`/sessions/${id}/actions`, { method: "POST", body: JSON.stringify({ action }) })
 };
+
+export async function waitForOperation(initial: Operation): Promise<void> {
+  let operation = initial;
+  const deadline = Date.now() + 10 * 60_000;
+  while (operation.state === "pending" || operation.state === "running") {
+    if (Date.now() > deadline) throw new Error("Preparation continues in the background. Check this task on the Workspaces page.");
+    await new Promise((resolve) => window.setTimeout(resolve, 800));
+    operation = await api.operation(operation.id);
+  }
+  if (operation.state !== "completed") throw new Error(operation.error ?? "Launch was cancelled. Check the branch task on the Workspaces page.");
+}

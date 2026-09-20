@@ -4,6 +4,7 @@ services:
   api:
     environment:
       AGENTCC_RUNTIME_ENABLED: "true"
+      AGENTCC_GIT_HELPER_IMAGE: agentcc-git-helper:dev
       AGENTCC_SESSION_IMAGE: agentcc-session-codex:dev
       AGENTCC_CODEX_SESSION_IMAGE: agentcc-session-codex:dev
       AGENTCC_HERMES_SESSION_IMAGE: agentcc-session-hermes:dev

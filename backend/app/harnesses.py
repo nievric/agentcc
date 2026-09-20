@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from .checkout import checkout_path
 from .models import AgentActivity, RegisteredModel, Session
 from .providers import ModelProvider, endpoint_from_session, provider_kind
 from .usage import ConversationEntry, UsageSnapshot, parse_claude_conversation, parse_claude_usage, parse_codex_conversation, parse_codex_usage, parse_hermes_conversation, parse_hermes_usage, parse_kilo_conversation, parse_kilo_usage
@@ -247,7 +248,7 @@ class HermesHarnessAdapter:
         assert model is not None  # narrowed by validate_model
         provider = provider_kind(model)
         home = "/home/agent/.hermes"
-        workspace = f"/workspaces/shared/{session.workspace_folder_name}"
+        workspace = checkout_path(session)
         config = "\n".join(
             [
                 "model:",

@@ -11,16 +11,21 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 import websockets
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from .harnesses import HarnessConfigurationError, harnesses
-from .models import AgentActivity, AppEvent, ConversationMessage, DisplaySettings, DisplaySettingsUpdate, ModelRegistration, RegisteredModel, Session, SessionAction, SessionCreate, SessionLog, SessionLogTail, SessionOutput, SessionState, Summary, Telemetry, Workspace, WorkspaceCreate, WorkspaceDelete, WorkspaceStorageSettings, WorkspaceStorageSettingsUpdate, WorkspaceUsage, default_model_label
+from .harnesses import HarnessConfigurationError
+from .models import AgentActivity, AppEvent, ConversationMessage, DisplaySettings, DisplaySettingsUpdate, ModelRegistration, Operation, RegisteredModel, Session, SessionAction, SessionCreate, SessionLog, SessionLogTail, SessionOutput, SessionState, Summary, Telemetry, Workspace, WorkspaceCreate, WorkspaceDelete, WorkspaceStorageSettings, WorkspaceStorageSettingsUpdate, WorkspaceUsage
 from .runtime import RuntimeUnavailable, runtime
 from .store import store
+from .worktrees import WorktreeService
+from .worktree_routes import worktree_router
+
+worktrees = WorktreeService(store, runtime)
 
 app = FastAPI(title="Agent Command Center API", version="0.1.0")
+app.include_router(worktree_router(worktrees))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8080"],
@@ -124,6 +129,7 @@ async def _transcript_poll_loop() -> None:
 
 @app.on_event("startup")
 async def start_transcript_collector() -> None:
+    worktrees.recover()
     await asyncio.to_thread(_recover_running_session_containers)
     app.state.transcript_collector = asyncio.create_task(_transcript_poll_loop())
 
@@ -135,6 +141,7 @@ async def stop_transcript_collector() -> None:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+    await asyncio.to_thread(worktrees.executor.shutdown, wait=True)
 
 
 @app.get("/health")
@@ -157,10 +164,9 @@ def list_sessions() -> list[Session]:
     return _refresh_sessions()
 
 
-@app.post("/api/v1/sessions", response_model=Session, status_code=201)
-def create_session(payload: SessionCreate) -> Session:
-    workspace = store.get_workspace(payload.workspace_id)
-    if workspace is None:
+@app.post("/api/v1/sessions", response_model=Session | Operation, status_code=201)
+def create_session(payload: SessionCreate, response: Response, idempotency_key: str | None = Header(default=None)):
+    if store.get_workspace(payload.workspace_id) is None:
         raise HTTPException(status_code=404, detail="workspace not found")
     if not runtime.enabled:
         raise HTTPException(
@@ -170,30 +176,17 @@ def create_session(payload: SessionCreate) -> Session:
                 "before starting the local backend or use deploy/compose.runtime.yaml"
             ),
         )
-    selected_model: RegisteredModel | None = None
-    if payload.model_id is not None:
-        selected_model = store.get_model(payload.model_id)
-        if selected_model is None or not selected_model.enabled:
-            raise HTTPException(status_code=404, detail="registered model not found")
     try:
-        harnesses.for_name(payload.harness).validate_model(selected_model)
+        result = worktrees.launch(payload, idempotency_key)
+        if isinstance(result, Operation):
+            response.status_code = 202
+        return result
     except HarnessConfigurationError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    session_data = payload.model_dump()
-    if selected_model is not None:
-        session_data["model"] = selected_model.model_name
-    else:
-        # The stored label is for operators; each adapter owns the actual
-        # native default selection behavior.
-        session_data["model"] = default_model_label(payload.harness)
-    session = Session(**session_data, workspace=workspace.name, workspace_folder_name=workspace.folder_name)
-    try:
-        provisioned = runtime.provision(session, workspace, selected_model)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except RuntimeUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
-    session.container_id = provisioned.container_id
-    session.volume_name = provisioned.volume_name
-    return store.add_session(session)
 
 
 @app.get("/api/v1/models", response_model=list[RegisteredModel])
@@ -223,21 +216,29 @@ def delete_model(model_id: UUID) -> Response:
 @app.post("/api/v1/sessions/{session_id}/actions", response_model=Session)
 def session_action(session_id: UUID, payload: SessionAction) -> Session:
     existing = store.get_session(session_id)
-    if existing is not None and existing.container_id is not None:
-        try:
-            if payload.action == "stop":
-                store.save_conversation(session_id, runtime.collect_conversation(existing))
-                runtime.stop(existing.container_id)
-            elif payload.action == "suspend":
-                runtime.suspend(existing.container_id)
-            elif payload.action == "resume":
-                runtime.resume(existing.container_id)
-        except RuntimeUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-    session = store.act_on_session(session_id, payload)
-    if session is None:
+    if existing is None:
         raise HTTPException(status_code=404, detail="session not found")
-    return session
+    with worktrees.lock(existing.workspace_id):
+        existing = store.get_session(session_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        if existing.state == SessionState.COMPLETED and payload.action != "stop":
+            raise HTTPException(status_code=409, detail="Completed sessions cannot be resumed; launch a new session to continue the task.")
+        if existing.container_id is not None:
+            try:
+                if payload.action == "stop":
+                    store.save_conversation(session_id, runtime.collect_conversation(existing))
+                    runtime.stop(existing.container_id)
+                elif payload.action == "suspend":
+                    runtime.suspend(existing.container_id)
+                elif payload.action == "resume":
+                    runtime.resume(existing.container_id)
+            except RuntimeUnavailable as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
+        session = store.act_on_session(session_id, payload)
+        if payload.action == "stop" and existing.worktree_id:
+            store.release_worktree(existing.worktree_id, session_id)
+        return session
 
 
 @app.delete("/api/v1/sessions/{session_id}", status_code=204)
@@ -245,16 +246,20 @@ def delete_session(session_id: UUID) -> Response:
     session = store.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
-    if session.state != SessionState.COMPLETED:
-        raise HTTPException(status_code=409, detail="stop the session before deleting it")
-    if session.container_id is not None or session.volume_name is not None:
-        try:
-            runtime.delete_session(session)
-        except RuntimeUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-    if not store.delete_session(session_id):
-        raise HTTPException(status_code=404, detail="session not found")
-    return Response(status_code=204)
+    with worktrees.lock(session.workspace_id):
+        session = store.get_session(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        if session.state != SessionState.COMPLETED:
+            raise HTTPException(status_code=409, detail="stop the session before deleting it")
+        if session.container_id is not None or session.volume_name is not None:
+            try:
+                runtime.delete_session(session)
+            except RuntimeUnavailable as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
+        if not store.delete_session(session_id):
+            raise HTTPException(status_code=404, detail="session not found")
+        return Response(status_code=204)
 
 
 @app.get("/api/v1/sessions/{session_id}/logs", response_model=list[SessionLog])
@@ -555,39 +560,46 @@ def delete_workspace(workspace_id: UUID, payload: WorkspaceDelete) -> Response:
     workspace = store.get_workspace(workspace_id, include_deleted=True)
     if workspace is None:
         raise HTTPException(status_code=404, detail="workspace not found")
-    try:
-        if payload.mode == "soft":
-            if workspace.deleted_at is not None:
-                raise HTTPException(status_code=409, detail="workspace is already in trash")
-            if store.soft_delete_workspace(workspace_id) is None:
-                raise HTTPException(status_code=409, detail="workspace could not be moved to trash")
-            return Response(status_code=204)
-        if store.workspace_has_sessions(workspace_id):
-            raise HTTPException(status_code=409, detail="delete all agent sessions associated with this workspace before permanently deleting it")
-        if runtime.enabled:
-            runtime.delete_workspace_storage(workspace)
-        elif workspace.status != "runtime required":
-            raise HTTPException(status_code=503, detail="container runtime is required to permanently delete durable workspace storage")
-        if not store.hard_delete_workspace(workspace_id):
+    with worktrees.lock(workspace_id):
+        workspace = store.get_workspace(workspace_id, include_deleted=True)
+        if workspace is None:
             raise HTTPException(status_code=404, detail="workspace not found")
-        return Response(status_code=204)
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except RuntimeUnavailable as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+        try:
+            store.guard_worktree_assets(workspace_id, hard=payload.mode == "hard", discard_history=payload.discard_task_history)
+            if payload.mode == "soft":
+                if workspace.deleted_at is not None:
+                    raise HTTPException(status_code=409, detail="workspace is already in trash")
+                if store.soft_delete_workspace(workspace_id) is None:
+                    raise HTTPException(status_code=409, detail="workspace could not be moved to trash")
+                return Response(status_code=204)
+            if store.workspace_has_sessions(workspace_id):
+                raise HTTPException(status_code=409, detail="delete all agent sessions associated with this workspace before permanently deleting it")
+            if runtime.enabled:
+                worktrees.git.remove_repository_storage(workspace_id)
+                runtime.delete_workspace_storage(workspace)
+            elif workspace.status != "runtime required":
+                raise HTTPException(status_code=503, detail="container runtime is required to permanently delete durable workspace storage")
+            if not store.hard_delete_workspace(workspace_id):
+                raise HTTPException(status_code=404, detail="workspace not found")
+            return Response(status_code=204)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except RuntimeUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.post("/api/v1/workspaces/{workspace_id}/restore", response_model=Workspace)
 def restore_workspace(workspace_id: UUID) -> Workspace:
-    workspace = store.get_workspace(workspace_id, include_deleted=True)
-    if workspace is None:
-        raise HTTPException(status_code=404, detail="workspace not found")
-    if workspace.deleted_at is None:
-        raise HTTPException(status_code=409, detail="workspace is not in trash")
-    restored = store.restore_workspace(workspace_id, "ready" if runtime.enabled else "runtime required")
-    if restored is None:
-        raise HTTPException(status_code=409, detail="workspace could not be restored")
-    return restored
+    with worktrees.lock(workspace_id):
+        workspace = store.get_workspace(workspace_id, include_deleted=True)
+        if workspace is None:
+            raise HTTPException(status_code=404, detail="workspace not found")
+        if workspace.deleted_at is None:
+            raise HTTPException(status_code=409, detail="workspace is not in trash")
+        restored = store.restore_workspace(workspace_id, "ready" if runtime.enabled else "runtime required")
+        if restored is None:
+            raise HTTPException(status_code=409, detail="workspace could not be restored")
+        return restored
 
 
 @app.get("/api/v1/events", response_model=list[AppEvent])

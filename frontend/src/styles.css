@@ -61,3 +61,23 @@ button { cursor: pointer; }
 .workspace-ide-hint { color: #bdc8d1; border-style: dashed; }.workspace-ide-hint:hover { color: #e8f6ff; border-color: #7bd0ff; }.workspace-ide-open { margin-top: 2px; }.workspace-ide-control { display: grid; gap: 7px; }.workspace-ide-control select { width: 100%; min-width: 0; min-height: 32px; color: #e6edf3; background: #0d1117; border: 1px solid #3e484f; border-radius: 4px; padding: 0 8px; font: 11px ui-monospace, monospace; }.workspace-ide-control .secondary-button:disabled { cursor: not-allowed; color: #6e7681; border-color: #3d444d; opacity: .65; }
 .workspace-card-actions { display: grid; gap: 7px; }.workspace-delete { width: 100%; font-size: 11px; }.workspace-message { margin-left: 0; }.trash-section { margin-top: 22px; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; background: rgba(22,27,34,.55); }.trash-section > p { margin: 12px 14px; color: #87929a; font-size: 12px; line-height: 1.4; }.trash-section .workspace-grid { padding: 0 14px 14px; }.deleted-workspace { border-style: dashed; opacity: .82; }.deleted-workspace .workspace-icon { color: #87929a; }.workspace-delete-dialog { width: min(500px, 100%); display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 12px; padding: 20px; border: 1px solid rgba(248,81,73,.65); border-radius: 8px; background: #161b22; box-shadow: 0 22px 55px rgba(0,0,0,.58); }.workspace-delete-dialog .eyebrow { margin: 1px 0 6px; color: #ffb4ab; }.workspace-delete-dialog h2 { font-size: 18px; }.workspace-delete-dialog p:not(.eyebrow) { margin: 9px 0 0; color: #aeb9c2; font-size: 13px; line-height: 1.5; }.workspace-delete-dialog .dialog-error, .workspace-delete-dialog .dialog-actions { grid-column: 1 / -1; }.workspace-delete-dialog .dialog-error { margin: 0; }.workspace-delete-dialog .dialog-actions { padding: 6px 0 0; flex-wrap: wrap; }.workspace-delete-dialog .dialog-actions .secondary-button { min-width: 116px; }
 .workspace-usage-refresh:disabled { cursor: wait; opacity: .65; }
+/* Separate branch tasks share the existing workspace and dialog surfaces. */
+.checkout-options { margin: 16px 0; padding: 12px; border: 1px solid #3e484f; border-radius: 6px; min-width: 0; }
+.checkout-options legend { color: #7bd0ff; font-size: 12px; padding: 0 5px; }
+.checkout-options p, .checkout-options summary { color: #aab7c4; font-size: 12px; line-height: 1.5; }
+.checkout-options .checkbox-label { display: flex; align-items: flex-start; gap: 8px; line-height: 1.5; }
+.checkout-options .checkbox-label input { width: auto; margin-top: 3px; }
+.branch-tasks { margin-top: 16px; border-top: 1px solid #30363d; padding-top: 12px; }
+.branch-tasks h3 { font-size: 13px; margin: 0 0 10px; }
+.branch-task { padding: 10px 0; border-top: 1px solid #252d36; }
+.branch-task strong, .branch-task code, .branch-task small { display: block; overflow-wrap: anywhere; }
+.branch-task code { color: #7bd0ff; margin: 5px 0; font-size: 11px; }
+.branch-task small, .branch-task p, .branch-confirm p { color: #aab7c4; font-size: 12px; line-height: 1.5; }
+.branch-task-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.branch-task-actions button, .branch-confirm button { border: 1px solid #3e484f; border-radius: 4px; background: #161b22; color: #dfe2eb; padding: 6px 9px; cursor: pointer; font-size: 11px; }
+.branch-task-actions button:disabled, .branch-confirm button:disabled { opacity: .5; cursor: default; }
+.branch-confirm { border: 1px solid #7bd0ff; padding: 10px; border-radius: 4px; }
+.branch-confirm button { margin-right: 6px; }
+.launch-dialog { max-height: 90vh; overflow-y: auto; }
+.workspace-delete-dialog .checkbox-label { grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 8px; color: #aab7c4; font-size: 12px; line-height: 1.5; }
+.workspace-delete-dialog .checkbox-label input { width: auto; margin-top: 3px; }

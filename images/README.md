@@ -1,5 +1,17 @@
 # Session image hierarchy
 
+Managed branch tasks also need the independent Git helper image:
+
+```sh
+docker build --tag agentcc-git-helper:dev images/git-helper
+```
+
+The API selects it with `AGENTCC_GIT_HELPER_IMAGE`. Helpers run without network
+access and use an unprivileged Git process; short root helpers prepare only
+verified volume mount roots. Rebuild the session base and derived harness images
+for the updated worktree-aware bootstrap. This development image has not been
+published as part of the existing `0.1.0` release.
+
 ```text
 agentcc-session-base
 ├── agentcc-session-codex

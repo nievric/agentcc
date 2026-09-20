@@ -1,0 +1,3 @@
+#!/bin/sh
+# Keep the production bootstrap alive and expose the actual selected folder.
+exec python3 -m http.server 8080 --directory "$WORKSPACE_ROOT"
